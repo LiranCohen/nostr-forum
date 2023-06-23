@@ -8,11 +8,11 @@ interface Subscription extends Filter {}
 const DEFAULT_RELAY = "wss://grove-relay.onrender.com"
 
 const Feed:React.FC<{ url: string, onChange: (url: string) => void }> = ({ url, onChange })  => {
+
   const [modifySub, setModify] = useState(false)
   const [relay, setRelay] = useState<Relay>()
   const [events, setEvents] = useState<Map<string, Event>>(new Map())
   const [editUrl, setUrl] = useState(url)
-
   const [sub, setSub] = useState<Subscription>()
 
   const user = useContext(UserContext)
@@ -21,11 +21,14 @@ const Feed:React.FC<{ url: string, onChange: (url: string) => void }> = ({ url, 
     setRelay(relayInit(url))
   }, [url])
 
-  const processEvent = (e: Event) => {
-    if (verifySignature(e)) {
-      setEvents(new Map(events.set(e.pubkey, e)))
+  useEffect(() => {
+    try {
+      new URL(editUrl)
+      onChange(editUrl)
+    } catch(error) {
+      console.log('bad url', editUrl)
     }
-  }
+  }, [editUrl])
 
   useEffect(() => {
    if(relay && sub)  {
@@ -40,6 +43,22 @@ const Feed:React.FC<{ url: string, onChange: (url: string) => void }> = ({ url, 
     }
    }
   }, [sub])
+
+  useEffect(() => {
+    if(relay && user){
+      connect()
+    }
+
+    return () => {
+      relay?.close()
+    }
+  },[relay, user])
+
+  const processEvent = (e: Event) => {
+    if (verifySignature(e)) {
+      setEvents(new Map(events.set(e.pubkey, e)))
+    }
+  }
 
   const subscribe = () => {
     if(relay) {
@@ -77,16 +96,6 @@ const Feed:React.FC<{ url: string, onChange: (url: string) => void }> = ({ url, 
     relay.on('auth', authorize)
   }
 
-  useEffect(() => {
-    if(relay && user){
-      connect()
-    }
-
-    return () => {
-      relay?.close()
-    }
-  },[relay, user])
-
   const shortenKey = (pubKey:string): string => {
     const npub = nip19.npubEncode(pubKey)
     if(npub.length <= 20) return npub
@@ -111,29 +120,101 @@ const Feed:React.FC<{ url: string, onChange: (url: string) => void }> = ({ url, 
     return eventListNodes
   }, [events])
 
-  useEffect(() => {
-    try {
-      new URL(editUrl)
-      onChange(editUrl)
-    } catch(error) {
-      console.log('bad url', editUrl)
-    }
-  }, [editUrl])
-
   return (
     <div>
       <div>
         <label>Modify Sub: <input type="checkbox" checked={modifySub} onChange={() => setModify(!modifySub)}/></label>
-        {modifySub && (<div>
-          <label>relay url: <input type="text" value={editUrl} onChange={(e) => setUrl(e.target.value)} /></label>
-          <FeedSubscription sub={sub} onChange={setSub} />
-        </div>)}
+        {modifySub && <ModifySubscription url={editUrl} setUrl={setUrl} sub={sub} onChange={setSub} />}
       </div>
       <div>{eventList}</div>
     </div>
   )
 }
 
+const ModifySubscription:React.FC<{
+  url: string
+  setUrl: (url: string) => void
+  sub?: Subscription
+  onChange: (sub: Subscription) => void
+}> = ({ url, setUrl, sub, onChange }) => {
+
+  return(
+    <div>
+      <label>relay url: <input type="text" value={url} onChange={(e) => setUrl(e.target.value)} /></label>
+      <FeedSubscription sub={sub} onChange={onChange} />
+    </div>
+  )
+}
+
+const TagItem:React.FC<{tag: string[], delItem: () => void}> = ({ tag, delItem }) => {
+  const del = (e: React.MouseEvent) => {
+    e.preventDefault()
+    delItem()
+  }
+
+  return (
+    <div>{tag.join(", ")} <button onClick={del}>del</button></div>
+  )
+}
+
+const TagInput:React.FC<{ tag: string[], onChange: (tag: string[]) => void}> = ({tag, onChange}) => {
+  const tags = useMemo(() => {
+    if(tag.length > 1 && tag[tag.length - 1]?.length === 0) {
+      return [...tag]
+    }
+    return [ ...tag, ""]
+  }, [tag])
+
+  const updateTag = (value: string, index: number) => {
+    const updated = [...tags]
+    if(updated.length === 1) {
+      onChange([value])
+    } else if(value.length === 0) {
+      updated.splice(index, 1)
+      onChange([...updated])
+    } else {
+      onChange([...updated.slice(0, index), value, ...updated.slice(index + 1)])
+    }
+  }
+
+  return (
+    <span>{tags.map((t, i) => <input type="text" value={t} onChange={(e) => updateTag(e.target.value, i)} placeholder="..." />)}</span>
+  )
+}
+
+const NewNote:React.FC = () => {
+  const [content, setContent] = useState("")
+  const [tags, setTags] = useState<string[][]>([])
+  const [newTag, setNewTag] = useState<string[]>([])
+
+  const delItem = (index: number) => {
+    tags.splice(index, 1) 
+    setTags([...tags])
+  }
+
+  const validateNewTag = useMemo(() => {
+    return newTag.length > 2 
+  }, [newTag])
+
+  const addItem = () => {
+    setTags([
+      ...tags,
+      newTag,
+    ])
+    setNewTag([])
+  }
+
+  return (
+    <div>
+      <div><label>kind: <input type="number" value={1} disabled={true}></input></label></div>
+      <div><label>content: <input type="text" value={content} onChange={(e) => setContent(e.target.value)} /></label></div>
+      <div>
+        <div><label>tags: {tags.map((t, i) => <TagItem key={t.join(",")} tag={t} delItem={() => delItem(i)} />)}</label></div>
+        <div><label>add tag: <TagInput tag={newTag} onChange={setNewTag} /></label><button disabled={!validateNewTag} onClick={() => addItem()}>add</button><button onClick={() => { setNewTag([])}}>clear</button></div>
+      </div>
+    </div>
+  )
+}
 const FeedSubscription: React.FC<{ sub?: Subscription, onChange: (sub: Subscription) => void}> = ({ sub, onChange }) => {
   const [kinds, setKinds] = useState<Kind[]>(sub?.kinds || [])
 
