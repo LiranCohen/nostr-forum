@@ -3,7 +3,7 @@ import { UserDispatch } from "../../context/user/user"
 import { generatePrivateKey, getPublicKey, nip19 } from "nostr-tools"
 
 export const Initialize:React.FC<{}> = ({}) => {
-  const [pubKey, setPubKey] = useState<string>("")
+  const [npub, setNpub] = useState<string>("")
 
   const [passphrase, setPassphrase] = useState("")
   const [newKey, setNew] = useState(false)
@@ -15,7 +15,7 @@ export const Initialize:React.FC<{}> = ({}) => {
     e.preventDefault()
     const sk = generatePrivateKey()
     setNsec(nip19.nsecEncode(sk))
-    setPubKey(getPublicKey(sk))
+    setNpub(nip19.npubEncode(getPublicKey(sk)))
   }
 
   const copy = async (e: MouseEvent<HTMLButtonElement>) => {
@@ -27,7 +27,7 @@ export const Initialize:React.FC<{}> = ({}) => {
 
   const saveNsec = async (e: FormEvent) => {
     e.preventDefault()
-    if(nsec && pubKey && passphrase){
+    if(nsec && npub && passphrase){
       await createUser(nsec, passphrase)
       setPassphrase("")
       setNsec("")
@@ -36,15 +36,15 @@ export const Initialize:React.FC<{}> = ({}) => {
 
   const unlockFormSubmit = async (e: FormEvent) => {
     e.preventDefault()
-    if(pubKey && passphrase) {
-      await loadUser(pubKey, passphrase)
+    if(npub && passphrase) {
+      await loadUser(npub, passphrase)
       setPassphrase("")
     }
   }
 
   const createRequired = useMemo(() => {
-    return nsec && pubKey && passphrase 
-  }, [nsec, pubKey, passphrase])
+    return nsec && npub && passphrase 
+  }, [nsec, npub, passphrase])
 
 
   return (
@@ -56,7 +56,7 @@ export const Initialize:React.FC<{}> = ({}) => {
         {!newKey && (
             <form onSubmit={unlockFormSubmit}>
               <label>
-                pubkey: <input type="text" value={pubKey} onChange={(e) => setPubKey(e.target.value)} /> 
+                npub: <input type="text" value={npub} onChange={(e) => setNpub(e.target.value)} /> 
               </label>
               <label>
                 passphrase: <input type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} /> 
@@ -69,7 +69,7 @@ export const Initialize:React.FC<{}> = ({}) => {
               nsec: <input type="text" value={nsec} onChange={(e) => setNsec(e.target.value)} required={true} />
             </label>
             {nsec && (<label>
-              npub: <input type="text" disabled={true} value={pubKey} required={true} />
+              npub: <input type="text" disabled={true} value={npub} required={true} />
             </label>)}
             {nsec && (<label>
               passphrase: <input type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} required={true} />

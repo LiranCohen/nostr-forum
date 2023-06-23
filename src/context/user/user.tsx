@@ -1,5 +1,5 @@
-import { Event, UnsignedEvent, getEventHash, getPublicKey, getSignature, nip19 } from "nostr-tools";
-import { ReactNode, createContext, useMemo, useState } from "react";
+import { Event, EventTemplate, UnsignedEvent, getEventHash, getPublicKey, getSignature, nip19 } from "nostr-tools";
+import { ReactNode, createContext, useState } from "react";
 
 interface UserInterface {
   loadUser: (pubKey: string, passphrase: string) => Promise<void>
@@ -56,6 +56,42 @@ class User {
     return u
   }
 
+  static async load(npub: string, passphrase: string): Promise<User> {
+    const decoded = nip19.decode(npub)
+    if(decoded.type !== "npub") {
+      throw new Error('invalid npub')
+    }
+
+    if(decoded.data.length !== 64) {
+      throw new Error('invalid pub key')
+    }
+
+    const pubKey = decoded.data
+    const encryptionKey = await User.encryptionKey(pubKey, passphrase)
+    const u = new User(encryptionKey)
+    await u.getKeyInfo(pubKey)
+    return u
+  }
+
+  async signEvent(event: EventTemplate): Promise<Event> {
+    const e = {
+      ...event,
+      pubkey: this.pubKey(),
+    } as Event
+
+    e.id = getEventHash(e)
+    e.sig = await this.getSignature(e)
+    return e 
+  }
+
+  npub () {
+    return this._nostrPubKey ? nip19.npubEncode(this._nostrPubKey) : ''
+  }
+
+  pubKey() {
+    return this._nostrPubKey || ''
+  }
+
   private static async encryptionKey(pubKey: string, passphrase: string) {
     const pbkdf2Params = { name: "PBKDF2", salt: this.encoder.encode(pubKey), iterations: 100000, hash: "SHA-256"}
     const baseKey = await window.crypto.subtle.importKey(
@@ -73,13 +109,6 @@ class User {
       true,
       ["encrypt", "decrypt"]
     )
-  }
-
-  static async load(pubKey: string, passphrase: string): Promise<User> {
-    const encryptionKey = await User.encryptionKey(pubKey, passphrase)
-    const u = new User(encryptionKey)
-    await u.getKeyInfo(pubKey)
-    return u
   }
 
   private async setKeyInfo(privateKey: string) {
@@ -150,20 +179,6 @@ class User {
     const keyInfo = await this.getKeyInfo(this._nostrPubKey)
     if (event.pubkey != keyInfo.pubKey) throw new Error('invalid pubkey')
     return getSignature(event, keyInfo.privateKey)
-  }
-
-  async signEvent(event: UnsignedEvent): Promise<Event> {
-    const sig = await this.getSignature(event)
-    const id = getEventHash(event)
-    return {
-      ...event,
-      id,
-      sig,
-    }
-  }
-
-  pubKey() {
-    return this._nostrPubKey
   }
 
 }
