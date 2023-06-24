@@ -73,15 +73,18 @@ class User {
     return u
   }
 
-  async signEvent(event: EventTemplate): Promise<Event> {
+  async signEvent<K extends number = number>(event: EventTemplate<K>): Promise<Event<K>> {
+    if(!this._nostrPubKey) throw new Error('invalid pubkey')
     const e = {
       ...event,
-      pubkey: this.pubKey(),
-    } as Event
-
-    e.id = getEventHash(e)
-    e.sig = await this.getSignature(e)
-    return e 
+      pubkey: this._nostrPubKey,
+    }
+    
+    return {
+      ...e,
+      id: getEventHash(e),
+      sig: await this.getSignature(e),
+    }
   }
 
   npub () {
