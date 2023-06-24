@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react'
-import { Event, EventTemplate, Filter, Relay, nip42, relayInit } from "nostr-tools"
+import { Event, EventTemplate, Filter, Kind, Relay, Sub, nip42, relayInit } from "nostr-tools"
 import { User } from '../../context/user/user'
+import canonicalize from 'canonicalize'
 
 const ConnectionManager: React.FC<{
   user: User,
@@ -71,6 +72,8 @@ class Connection {
   private connected: boolean
   private errorCount: number
 
+  private subscriptions: Map<string, Sub<Kind>>
+
   private constructor(relay: Relay, signer: Signer, noticer: Noticer) {
     this.signer = signer
     this.connected = false
@@ -82,6 +85,7 @@ class Connection {
     relay.on('error', () => this.onError())
     relay.on('notice', (msg) => noticer.notice(msg))
     this.relay = relay
+    this.subscriptions = new Map()
   }
 
   static async connect(url: string, signer: Signer, noticer: Noticer): Promise<Connection> {
@@ -115,17 +119,43 @@ class Connection {
     return this.connected
   }
 
+  get relayURL () {
+    return this.relay.url
+  }
+
   close() {
     return this.relay.close()
   }
 
-  sub(sub: Filter[], processEvent: (e: Event) => void, eose: () => void) {
-    const s = this.relay.sub(sub)
-    s.on('event', (e) => processEvent(e))
-    s.on('eose', eose)
+  async sub(sub: Filter[], processEvent: (id:string, e: Event) => void, eose: () => void) {
+
+    const subHash = await hashSub(sub)
+    const s = this.subscriptions.get(subHash)
+    if(s) {
+      s.on('event', (e) => processEvent(subHash, e))
+      s.on('eose', eose)
+    } else {
+      const s = this.relay.sub(sub)
+      s.on('event', (e) => processEvent(subHash, e))
+      s.on('eose', eose)
+    }
+
     return s
   }
 
 }
 
-export { Connection, ConnectionManager }
+const hashSub = async (sub: Filter[]): Promise<string> => {
+
+  const hashFitler = async (filter: Filter): Promise<string> => {
+    const encodedFilter = new TextEncoder().encode(canonicalize(filter))
+    const d = new Uint8Array(await window.crypto.subtle.digest('SHA-256', encodedFilter))
+    return btoa(Array.from(d).map(byte => String.fromCharCode(byte)).join(''))
+  }
+
+  const longKey = new TextEncoder().encode(sub.map(hashFitler).sort().join(""))
+  const keyHash = new Uint8Array(await window.crypto.subtle.digest('SHA-256', longKey))
+  return btoa(Array.from(keyHash).map(byte => String.fromCharCode(byte)).join(''))
+}
+
+export { Connection, ConnectionManager, hashSub }

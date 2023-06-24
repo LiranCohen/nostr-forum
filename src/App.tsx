@@ -2,10 +2,11 @@ import { useContext, useEffect, useMemo, useState } from 'react'
 import './App.css'
 import { Initialize } from './components/initialize/initialize'
 import { UserContext } from './context/user/user'
-import { Connection, DefaultRelay, Feed } from './components/feed/feed'
+import { Connection, DefaultRelay, EventDatabase, Feed } from './components/feed/feed'
 import { ConnectionManager } from './components/connection/connection'
 
 function App() {
+  const [store] = useState<EventDatabase>(new EventDatabase())
   const [connections, setConnections] = useState<Map<string, Connection>>(new Map())
   const user = useContext(UserContext)
 
@@ -30,7 +31,7 @@ function App() {
    <div>
     {(user && npub && npub.length > 0) && <div>
       <ConnectionManager connections={connections} setConnections={setConnections} user={user} />
-      <Feed connections={connections} /> 
+      <Feed connections={connections} store={store} relays={["wss://relay.damus.io"]} sub={{ kinds: [1], limit: 100 }} /> 
     </div>|| <Initialize />}
    </div> 
   )

@@ -1,128 +1,153 @@
 import { Event, verifySignature, Kind, Filter } from 'nostr-tools'
 import React, { useEffect, useMemo, useState } from 'react'
 import { Note } from '../note/note'
-import { Connection } from '../connection/connection'
+import { Connection, hashSub } from '../connection/connection'
+import Dexie from 'dexie'
 
 interface Subscription extends Filter {}
 const DEFAULT_RELAY = "wss://grove-relay.onrender.com"
-const EVENT_DB = 'NOSTRDB'
-const STORE_NAME = 'EventsStore'
 
-class EventStore {
-  private db: IDBDatabase | undefined;
-
-  constructor(){}
-
-  async init(): Promise<void> {
-    const request = indexedDB.open(EVENT_DB)
-    request.onupgradeneeded = (event) => {
-      this.db = (event.target as IDBOpenDBRequest).result
-      const store = this.db.createObjectStore(STORE_NAME, { keyPath: 'id' })
-      store.createIndex('kind', 'kind', { unique: false })
-      store.createIndex('pubkey', 'pubkey', { unique: false })
-      store.createIndex('create_at', 'create_at', { unique: false })
-      store.createIndex('tags', 'tags', { unique: false, multiEntry: true })
-    }
-
-    return new Promise<void>((resolve,reject) => {
-      request.onsuccess = (event) => {
-        this.db = (event.target as IDBOpenDBRequest).result
-        resolve()
-      }
-
-      request.onerror = () => {
-        reject(`error opening database`)
-      }
-    })
-  }
-
-  addEvent(event: Event) {
-    const tx = this.db?.transaction([STORE_NAME], 'readwrite')
-    const store = tx?.objectStore(STORE_NAME)
-    store?.add(event)
-  }
-
-  query(filter: Filter[]) {
-  }
-
-  getEvent(id: string): Promise<Event|undefined> {
-    return new Promise((resolve,reject) => {
-      const tx = this.db?.transaction([STORE_NAME], 'readonly')
-      const store = tx?.objectStore(STORE_NAME)
-      const request = store?.get(id)
-      request?.addEventListener('success', () => {
-        resolve(request.result)
-      })
-      request?.addEventListener('error', () => {
-        reject(`error getting event ${id}`)
-      })
-    })
-  }
-
+interface EventConsumer {
+  onEvent: (event: Event) => void
 }
 
-const Feed:React.FC<{ connections: Map<string, Connection> }> = ({ connections })  => {
+interface EventRelayInfo {
+  available: boolean
+  lastChecked: number
+}
 
-  const [modifySub, setModify] = useState(false)
-  const [events, setEvents] = useState<Event[]>([])
-  const [sub, setSub] = useState<Subscription>()
-  const [relay, setRelay] = useState<string>('')
-  const [activeConnection, setActiveConnection] = useState<Connection>()
+interface EventTrack {
+  event: Event
+  relays: Map<string, EventRelayInfo>
+}
 
-  useEffect(() => {
-   if(activeConnection && sub)  {
-    //TODO: This is naive, will have a centralized cache to feed into/from and only reset the component state vs central storage
-    setEvents([])
-    const s = activeConnection.sub([{...sub}], (e) => {
-      processEvent(e)
-    }, () => { console.log('eose: end of subscribed events')})
+class EventDatabase extends Dexie {
+  private events: Dexie.Table<EventTrack, string>;  // id is the primary key
+  private consumers: Map<string, EventConsumer>
 
-    return () => {
-      s?.unsub()
-    }
-   } else {
-    setEvents([])
-   }
-  }, [sub])
+  constructor() {
+      super('Events');
+      this.version(1).stores({
+          events: 'id,pubkey,kind,tags,content,created_at',
+      });
+      this.events = this.table('events');
+      this.consumers = new Map()
+  }
 
-  const currentEvents = useMemo(() => {
-    return [...events]
-  },[events])
+  async sub(sub: Filter, consumer: EventConsumer) {
+    const hash = await hashSub([sub])
+    this.consumers.set(hash, consumer)
+  }
 
-  const processEvent = (e: Event) =>  {
-    if (verifySignature(e)) {
-      setEvents([e, ...currentEvents])
+  async unsub(subId:string) {
+    this.consumers.delete(subId)
+  }
+
+  async addEvent(subId: string, event: Event, relayURL: string) {
+    try {
+      const tracker = await this.events.get(event.id)
+      if(tracker) {
+        tracker?.relays.set(relayURL, {
+          available: true,
+          lastChecked: Math.floor(new Date().getTime() / 1000),  
+        })
+        this.events.put(tracker, event.id)
+      }
+    } catch(error) {
+      const relayInfo = {
+        available: true,
+        lastChecked: Math.floor(new Date().getTime() / 1000),  
+      }
+      await this.events.add({
+        event,
+        relays: new Map([[relayURL, relayInfo]])
+      }, event.id)
+    } finally {
+      this.consumers.get(subId)?.onEvent(event)
     }
   }
 
+  async filterEvents(filter: Filter): Promise<Event[]> {
+      let collection: Dexie.Collection<EventTrack, string> = this.events.toCollection()
+
+      if (filter.ids && filter.ids.length > 0) {
+        const ids = [...filter.ids]
+        collection = collection.and(({event}) => ids.includes(event.id))
+      }
+      
+      if (filter.kinds && filter.kinds.length > 0) {
+        const kinds = [...filter.kinds]
+        collection = collection.and(({event}) => kinds.includes(event.kind))
+      }
+
+      if (filter.authors && filter.authors.length > 0) {
+        const authors = [...filter.authors]
+        collection = collection.and(({event}) => authors.includes(event.pubkey))
+      }
+      
+      if (filter.since) {
+        const since = filter.since
+        collection = collection.and(({event}) => event.created_at >= since);
+      }
+
+      if (filter.until) {
+        const until = filter.until
+        collection = collection.and(({event}) => event.created_at <= until);
+      }
+
+      let events = await collection.toArray()
+
+      if (filter.limit) {
+          events = events.slice(0, filter.limit);
+      }
+
+      return events.map(e => e.event);
+  }
+}
+
+const Feed:React.FC<{ 
+  store: EventDatabase
+  connections: Map<string, Connection>
+  sub: Subscription
+  relays: string[]
+}> = ({ store, connections, sub, relays })  => {
+  const [events, setEvents] = useState<Event[]>([])
+  const [activeConnections, setActiveConnections] = useState<Map<string, Connection>>(new Map())
+
   useEffect(() => {
-    if(relay.length > 0) {
-      const conn = connections.get(relay)
-      setActiveConnection(conn)
-    } else {
-      setActiveConnection(undefined)
+    relays.forEach(r => {
+      if(connections.has(r) && !activeConnections.has(r)) {
+        setRelay(r)
+      }
+    })
+  },[relays, connections])
+
+  const setRelay = async (relay:string) => {
+    const conn = connections.get(relay)
+    if(conn) {
+      await conn?.sub(
+        [{...sub}],
+        async (id:string, e:Event) => {
+          await store.addEvent(id, e, relay)
+        },
+        () => console.log(`[EOSE] reached end of sub`),
+      )
+      store.sub({...sub}, { onEvent: (e) => {
+        events.push(e)
+        setEvents([...events])
+      }})
+      activeConnections.set(relay, conn)
+      setActiveConnections(new Map(Array.from(activeConnections)))
     }
-  }, [relay])
+  }
 
-  useEffect(() => {
-    setSub({ kinds: [1], limit: 100 })
-  },[activeConnection])
-
-  const connectionKeys = useMemo(() => {
-    return Array.from(connections.keys())
-  }, [connections])
+  const sortedEvents = useMemo(() => {
+    return events.sort((a, b) => b.created_at - a.created_at)
+  }, [events])
 
   return (
     <div>
-      <div>
-        <select value={relay} onChange={(e) => setRelay(e.target.value)}>
-          <option value="">None</option>
-          {connectionKeys.map(k => <option key={k} value={k}>{k}</option>)}
-        </select>
-        <label>Modify Sub: <input type="checkbox" checked={modifySub} onChange={() => setModify(!modifySub)}/></label>
-        {modifySub && <FeedSubscription sub={sub} onChange={setSub} />}
-      </div>
-      <div>{events.map(event => <Note key={event.id} event={event} />)}</div>
+      {sortedEvents.map(event => <Note key={event.id} event={event} />)}
     </div>
   )
 }
@@ -176,4 +201,4 @@ const FeedSubscription: React.FC<{ sub?: Subscription, onChange: (sub: Subscript
   ) 
 }
 
-export {Connection, Feed, DEFAULT_RELAY as DefaultRelay}
+export {Connection, Feed, DEFAULT_RELAY as DefaultRelay, EventDatabase}
